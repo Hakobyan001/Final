@@ -2,7 +2,6 @@
 import http from 'http';
 import 'dotenv/config';
 import 'regenerator-runtime';
-import express from 'express';
 
 // Modules from this project
 import cluster from 'cluster';
@@ -10,14 +9,14 @@ import { LoggerUtil } from '../utils';
 import App from '../app';
 import UrlService from '../services/UrlService';
 import { UrlsModel } from '../models';
-import UrlsController from '../controller/urls.controller';
+import db from '../../knex.config';
+const knex = require('knex')(db.option);
+
 // Constants
 import config from '../config/variables.config';
 import { name } from '../../package.json';
-import { send } from 'process';
 
 const { PORT } = config;
-// app.use(express).listen(PORT);
 
 const init = async () => {
   const server = http.createServer(App.app);
@@ -58,49 +57,75 @@ const init = async () => {
   server.on('listening', _onListening);
 };
 const total_cpus = require('os').cpus().length;
-let urls = []
+
 let element = [];
+
+let start = 0;
+let end = 1;
 
 async function isPrimary() {
 
   if (cluster.isPrimary) {
-    urls = await UrlsModel.getUrls(0,500);
-    // urls = await UrlsController.getAllUrls(1,20);
 
     const worker = cluster.fork();
-    for (let i = 0; i < 7; i += 1) {
-      cluster.fork()
+    for (let i = 0; i < total_cpus - 1; i += 1) {
+      cluster.fork();
     }
-      for (let step = 0; step < urls.length; step += 5) {
-        element = urls.slice(step, step + 5);
+
+    
+
+    cluster.on('online', async (worker) => {
+
+      console.log(start, end);
+      start++;
+      end++;
+
+      console.log(`Worker ${worker.process.pid} is online.`);
+
+      const links = await UrlsModel.getUrls(start * 2000, end * 2000);
+
+      for (let step = 0; step < links.length; step += 50) {
+        element = links.slice(step, step + 50);
         worker.send(element);
       }
 
-      worker.on("message", (msg) => {
-        // check for data property
-        // on msg object
-        if (msg.data) {
-          let count = msg.data.length * urls.length/5;
-          console.log(count);
-        }
+      worker.on('message', (msg) => {
+
+        knex
+          .from('links')
+          .whereIn('id', msg.data[0])
+          .update({ status: 'passive' })
+          .then(() => {
+            console.log('Table update');
+          });
+  
+        knex
+          .from('links')
+          .whereIn('id', msg.data[1])
+          .update({ status: 'active' })
+          .then(() => {
+            console.log('Table update');
+          });
       });
 
-    cluster.on('online', (worker) => {
-      console.log(`Worker ${worker.process.pid} is online.`);
     });
 
-
-    cluster.on('exit', (worker) => {
+    cluster.on('exit', async (worker) => {
+      console.log(end);
       console.log(`worker ${worker.process.pid} died.`);
-      cluster.fork();
+
+      if (end <= 100) {
+        cluster.fork();
+        console.log('DIERY GNACCCCCCCCC!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+      }
     });
 
   } else {
-    process.on('message', async function (msg) {
-      // we only want to intercept messages that have a chat property
-      process.send({data : await UrlService.checkUrls(msg)});
+    process.on('message', async (msg) => {
+      process.send({ data: await UrlService.checkUrls(msg) });
+      process.kill(process.pid);
     });
   }
 }
-isPrimary();
 
+isPrimary();
